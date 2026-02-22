@@ -213,10 +213,10 @@ class Ensemble:
         market_data = {}
 
         try:
-            # 5-min bars for momentum
+            # 1-min bars for momentum
             if risk.is_momentum_active() or risk.is_momentum_force_close():
-                bars_5m = data.get_intraday_bars(MOMENTUM_UNIVERSE, timeframe_minutes=5, lookback_days=2)
-                market_data["bars_5m"] = bars_5m
+                bars_1m = data.get_intraday_bars(MOMENTUM_UNIVERSE, timeframe_minutes=1, lookback_days=2)
+                market_data["bars_1m"] = bars_1m
 
             # 15-min bars for mean reversion (need dynamic universe)
             if risk.is_mean_reversion_active():

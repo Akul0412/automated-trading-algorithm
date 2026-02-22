@@ -94,7 +94,7 @@ EXPOSURE_RISK_OFF = _env_float("COMP_EXPOSURE_RISK_OFF", 0.70)
 
 # --- Execution ---
 LIMIT_ORDER_TIMEOUT_SEC = _env_int("COMP_LIMIT_ORDER_TIMEOUT_SEC", 30)
-CYCLE_INTERVAL_SEC = _env_int("COMP_CYCLE_INTERVAL_SEC", 180)  # 3 minutes
+CYCLE_INTERVAL_SEC = _env_int("COMP_CYCLE_INTERVAL_SEC", 60)  # 1 minute
 
 # --- Database ---
 DB_PATH = os.environ.get("COMP_DB_PATH", "competition_bot.db")

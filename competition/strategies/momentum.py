@@ -1,6 +1,6 @@
 """
 Momentum strategy — Opening Range Breakout.
-Intraday only (5-min bars), 20 liquid large-caps.
+Intraday only (1-min bars), 20 liquid large-caps.
 """
 
 import logging
@@ -23,26 +23,26 @@ class MomentumStrategy(BaseStrategy):
         VWAP direction and 9-EMA > 21-EMA (long) or 9-EMA < 21-EMA (short).
         Volume on breakout bar >= 1.5x average.
         """
-        bars_5m = market_data.get("bars_5m")
-        if bars_5m is None or bars_5m.empty:
+        bars_1m = market_data.get("bars_1m")
+        if bars_1m is None or bars_1m.empty:
             return []
 
         signals = []
 
         for symbol in MOMENTUM_UNIVERSE:
             try:
-                ohlcv = self._get_symbol_data(bars_5m, symbol)
+                ohlcv = self._get_symbol_data(bars_1m, symbol)
                 if ohlcv is None or len(ohlcv) < config.MOM_EMA_SLOW + 5:
                     continue
 
                 # Get today's data only
                 today_data = self._get_today_data(ohlcv)
-                if today_data is None or len(today_data) < 7:
-                    # Need at least 30 min of data (6 bars of 5-min) + current
+                if today_data is None or len(today_data) < 31:
+                    # Need at least 30 min of data (30 bars of 1-min) + current
                     continue
 
-                # Calculate opening range from first 6 bars (30 min)
-                opening_bars = today_data.iloc[:6]
+                # Calculate opening range from first 30 bars (30 min)
+                opening_bars = today_data.iloc[:30]
                 range_high = float(opening_bars["high"].max())
                 range_low = float(opening_bars["low"].min())
 
@@ -138,8 +138,8 @@ class MomentumStrategy(BaseStrategy):
         4. VWAP cross
         5. Forced close at 15:45 ET
         """
-        bars_5m = market_data.get("bars_5m")
-        if bars_5m is None or bars_5m.empty:
+        bars_1m = market_data.get("bars_1m")
+        if bars_1m is None or bars_1m.empty:
             return []
 
         exits = []
@@ -151,7 +151,7 @@ class MomentumStrategy(BaseStrategy):
 
             ticker = pos["ticker"]
             try:
-                ohlcv = self._get_symbol_data(bars_5m, ticker)
+                ohlcv = self._get_symbol_data(bars_1m, ticker)
                 if ohlcv is None or ohlcv.empty:
                     continue
 
