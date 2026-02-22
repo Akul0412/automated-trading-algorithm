@@ -7,3 +7,5 @@ python-dotenv
 lxml
 beautifulsoup4
 rich
+pymysql
+cryptography

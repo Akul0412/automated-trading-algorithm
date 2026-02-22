@@ -14,8 +14,9 @@ import argparse
 import csv
 import datetime
 import os
-import sqlite3
 import sys
+
+import pymysql
 
 from rich.console import Console
 from rich.layout import Layout
@@ -26,7 +27,6 @@ from rich import box
 
 from competition import config
 
-DB_PATH = config.DB_PATH
 console = Console()
 
 LOGO = """
@@ -39,11 +39,17 @@ LOGO = """
 
 
 def _connect():
-    if not os.path.exists(DB_PATH):
-        console.print(f"[red]No database found at {DB_PATH}[/red]")
-        console.print("Run: [cyan]python -m competition.main --dry-run --once[/cyan]")
+    if not config.MYSQL_URL:
+        console.print("[red]MYSQL_URL not set — cannot connect to database[/red]")
         sys.exit(1)
-    return sqlite3.connect(DB_PATH)
+    return pymysql.connect(
+        host=config.MYSQL_HOST,
+        port=config.MYSQL_PORT,
+        user=config.MYSQL_USER,
+        password=config.MYSQL_PASSWORD,
+        database=config.MYSQL_DATABASE,
+        cursorclass=pymysql.cursors.Cursor,
+    )
 
 
 def _pnl_color(value):
@@ -84,18 +90,19 @@ def _status_str(status):
 
 def show_summary():
     conn = _connect()
+    cur = conn.cursor()
 
     console.print(f"[bold cyan]{LOGO}[/bold cyan]")
     console.print()
 
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    title_text = Text("COMPETITION BOT DASHBOARD", style="bold white")
 
     # ── Account Panel ──
-    snap = conn.execute(
+    cur.execute(
         "SELECT total_equity, cash, long_exposure, short_exposure, net_exposure, timestamp "
         "FROM daily_snapshots ORDER BY id DESC LIMIT 1"
-    ).fetchone()
+    )
+    snap = cur.fetchone()
 
     account_table = Table(show_header=False, box=None, padding=(0, 2))
     account_table.add_column("Label", style="dim")
@@ -127,7 +134,8 @@ def show_summary():
     cap_table.add_column("Realized P&L", justify="right")
     cap_table.add_column("Available", justify="right", style="bold")
 
-    rows = conn.execute("SELECT strategy, allocated, used, realized_pnl FROM strategy_capital").fetchall()
+    cur.execute("SELECT strategy, allocated, used, realized_pnl FROM strategy_capital")
+    rows = cur.fetchall()
     strat_icons = {"momentum": ">>> ", "mean_reversion": "<-> ", "sector_rotation": "~~~ "}
 
     total_pnl = 0
@@ -160,10 +168,11 @@ def show_summary():
     pos_table.add_column("Target", justify="right", style="green")
     pos_table.add_column("Entered", style="dim")
 
-    positions = conn.execute(
+    cur.execute(
         "SELECT strategy, ticker, side, shares, entry_price, stop_price, target_price, entry_time "
         "FROM strategy_positions WHERE status='open' ORDER BY strategy, entry_time"
-    ).fetchall()
+    )
+    positions = cur.fetchall()
 
     if positions:
         for strat, ticker, side, shares, entry, stop, target, entry_time in positions:
@@ -193,10 +202,11 @@ def show_summary():
     trade_table.add_column("Fill Price", justify="right")
     trade_table.add_column("Status", justify="center")
 
-    trades = conn.execute(
+    cur.execute(
         "SELECT timestamp, strategy, ticker, side, shares, fill_price, status "
         "FROM trade_log ORDER BY id DESC LIMIT 10"
-    ).fetchall()
+    )
+    trades = cur.fetchall()
 
     if trades:
         for ts, strat, ticker, side, shares, price, status in trades:
@@ -217,12 +227,18 @@ def show_summary():
                         border_style="magenta", box=box.HEAVY))
 
     # ── Stats Bar ──
-    total_trades = conn.execute("SELECT COUNT(*) FROM trade_log").fetchone()[0]
-    filled = conn.execute("SELECT COUNT(*) FROM trade_log WHERE status IN ('FILLED', 'DRY_RUN')").fetchone()[0]
-    failed = conn.execute("SELECT COUNT(*) FROM trade_log WHERE status='FAILED'").fetchone()[0]
-    closed = conn.execute("SELECT COUNT(*) FROM strategy_positions WHERE status='closed'").fetchone()[0]
-    winners = conn.execute("SELECT COUNT(*) FROM strategy_positions WHERE status='closed' AND pnl > 0").fetchone()[0]
-    total_realized = conn.execute("SELECT COALESCE(SUM(pnl), 0) FROM strategy_positions WHERE status='closed'").fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM trade_log")
+    total_trades = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM trade_log WHERE status IN ('FILLED', 'DRY_RUN')")
+    filled = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM trade_log WHERE status='FAILED'")
+    failed = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM strategy_positions WHERE status='closed'")
+    closed = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM strategy_positions WHERE status='closed' AND pnl > 0")
+    winners = cur.fetchone()[0]
+    cur.execute("SELECT COALESCE(SUM(pnl), 0) FROM strategy_positions WHERE status='closed'")
+    total_realized = cur.fetchone()[0]
 
     win_rate = f"{winners / closed * 100:.1f}%" if closed > 0 else "N/A"
 
@@ -243,6 +259,7 @@ def show_summary():
 
     console.print(Panel(stats, title="Statistics", border_style="white", box=box.HEAVY))
 
+    cur.close()
     conn.close()
 
 
@@ -252,12 +269,14 @@ def show_summary():
 
 def show_trades():
     conn = _connect()
+    cur = conn.cursor()
 
-    trades = conn.execute(
+    cur.execute(
         "SELECT id, timestamp, strategy, ticker, side, shares, order_type, "
         "requested_price, fill_price, slippage, status, signal_details "
         "FROM trade_log ORDER BY id"
-    ).fetchall()
+    )
+    trades = cur.fetchall()
 
     table = Table(title="All Trades", box=box.HEAVY, border_style="magenta",
                   show_lines=False, row_styles=["", "dim"])
@@ -291,6 +310,7 @@ def show_trades():
     console.print(table)
     console.print(f"\n  [dim]Total: {len(trades)} trades[/dim]")
 
+    cur.close()
     conn.close()
 
 
@@ -300,6 +320,7 @@ def show_trades():
 
 def show_positions():
     conn = _connect()
+    cur = conn.cursor()
 
     # Open positions
     open_table = Table(title="Open Positions", box=box.HEAVY, border_style="yellow")
@@ -313,11 +334,12 @@ def show_positions():
     open_table.add_column("Target", justify="right", style="green")
     open_table.add_column("Bars Held", justify="right", style="dim")
 
-    open_pos = conn.execute(
+    cur.execute(
         "SELECT id, strategy, ticker, side, shares, entry_price, stop_price, "
         "target_price, entry_time, bars_held "
         "FROM strategy_positions WHERE status='open' ORDER BY entry_time"
-    ).fetchall()
+    )
+    open_pos = cur.fetchall()
 
     if open_pos:
         for pid, strat, ticker, side, shares, entry, stop, target, etime, bars in open_pos:
@@ -347,11 +369,12 @@ def show_positions():
     closed_table.add_column("P&L", justify="right")
     closed_table.add_column("Reason")
 
-    closed_pos = conn.execute(
+    cur.execute(
         "SELECT id, strategy, ticker, side, shares, entry_price, exit_price, "
         "entry_time, exit_time, pnl, notes "
         "FROM strategy_positions WHERE status='closed' ORDER BY id DESC LIMIT 20"
-    ).fetchall()
+    )
+    closed_pos = cur.fetchall()
 
     if closed_pos:
         for pid, strat, ticker, side, shares, entry, exit_p, etime, xtime, pnl, notes in closed_pos:
@@ -368,6 +391,7 @@ def show_positions():
     console.print()
     console.print(closed_table)
 
+    cur.close()
     conn.close()
 
 
@@ -377,6 +401,7 @@ def show_positions():
 
 def show_pnl():
     conn = _connect()
+    cur = conn.cursor()
 
     strategies = ["momentum", "mean_reversion", "sector_rotation"]
     icons = {"momentum": ">>>", "mean_reversion": "<->", "sector_rotation": "~~~"}
@@ -388,33 +413,38 @@ def show_pnl():
         color = colors[strat]
         icon = icons[strat]
 
-        cap = conn.execute(
-            "SELECT allocated, used, realized_pnl FROM strategy_capital WHERE strategy=?",
+        cur.execute(
+            "SELECT allocated, used, realized_pnl FROM strategy_capital WHERE strategy=%s",
             (strat,),
-        ).fetchone()
+        )
+        cap = cur.fetchone()
 
-        closed = conn.execute(
-            "SELECT COUNT(*), COALESCE(SUM(pnl), 0) FROM strategy_positions WHERE strategy=? AND status='closed'",
+        cur.execute(
+            "SELECT COUNT(*), COALESCE(SUM(pnl), 0) FROM strategy_positions WHERE strategy=%s AND status='closed'",
             (strat,),
-        ).fetchone()
+        )
+        closed = cur.fetchone()
         total_trades, total_pnl = closed
 
-        winners = conn.execute(
+        cur.execute(
             "SELECT COUNT(*), COALESCE(AVG(pnl), 0) "
-            "FROM strategy_positions WHERE strategy=? AND status='closed' AND pnl > 0",
+            "FROM strategy_positions WHERE strategy=%s AND status='closed' AND pnl > 0",
             (strat,),
-        ).fetchone()
+        )
+        winners = cur.fetchone()
 
-        losers = conn.execute(
+        cur.execute(
             "SELECT COUNT(*), COALESCE(AVG(pnl), 0) "
-            "FROM strategy_positions WHERE strategy=? AND status='closed' AND pnl <= 0",
+            "FROM strategy_positions WHERE strategy=%s AND status='closed' AND pnl <= 0",
             (strat,),
-        ).fetchone()
+        )
+        losers = cur.fetchone()
 
-        open_count = conn.execute(
-            "SELECT COUNT(*) FROM strategy_positions WHERE strategy=? AND status='open'",
+        cur.execute(
+            "SELECT COUNT(*) FROM strategy_positions WHERE strategy=%s AND status='open'",
             (strat,),
-        ).fetchone()[0]
+        )
+        open_count = cur.fetchone()[0]
 
         t = Table(show_header=False, box=None, padding=(0, 2))
         t.add_column("Label", style="dim")
@@ -450,15 +480,12 @@ def show_pnl():
     console.print(Columns(panels, equal=True, expand=True))
 
     # Ensemble total
-    total = conn.execute(
-        "SELECT COALESCE(SUM(pnl), 0) FROM strategy_positions WHERE status='closed'"
-    ).fetchone()[0]
-    total_closed = conn.execute(
-        "SELECT COUNT(*) FROM strategy_positions WHERE status='closed'"
-    ).fetchone()[0]
-    total_open = conn.execute(
-        "SELECT COUNT(*) FROM strategy_positions WHERE status='open'"
-    ).fetchone()[0]
+    cur.execute("SELECT COALESCE(SUM(pnl), 0) FROM strategy_positions WHERE status='closed'")
+    total = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM strategy_positions WHERE status='closed'")
+    total_closed = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM strategy_positions WHERE status='open'")
+    total_open = cur.fetchone()[0]
 
     ensemble_t = Table(show_header=False, box=None, padding=(0, 4), expand=True)
     ensemble_t.add_column("", justify="center")
@@ -476,6 +503,7 @@ def show_pnl():
     console.print(Panel(ensemble_t, title="[bold white]ENSEMBLE TOTAL[/bold white]",
                         border_style="white", box=box.DOUBLE))
 
+    cur.close()
     conn.close()
 
 
@@ -485,12 +513,14 @@ def show_pnl():
 
 def show_history():
     conn = _connect()
+    cur = conn.cursor()
 
-    snapshots = conn.execute(
+    cur.execute(
         "SELECT timestamp, total_equity, cash, long_exposure, short_exposure, "
         "net_exposure, momentum_pnl, mean_reversion_pnl, sector_rotation_pnl "
         "FROM daily_snapshots ORDER BY id"
-    ).fetchall()
+    )
+    snapshots = cur.fetchall()
 
     table = Table(title="Equity History", box=box.HEAVY, border_style="cyan",
                   row_styles=["", "dim"])
@@ -543,6 +573,7 @@ def show_history():
         )
         console.print(Panel(summary, border_style="cyan", box=box.HEAVY))
 
+    cur.close()
     conn.close()
 
 
@@ -552,6 +583,7 @@ def show_history():
 
 def export_csv():
     conn = _connect()
+    cur = conn.cursor()
 
     console.print()
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -559,9 +591,10 @@ def export_csv():
     exports = []
 
     # Trades
-    trades = conn.execute("SELECT * FROM trade_log ORDER BY id").fetchall()
+    cur.execute("SELECT * FROM trade_log ORDER BY id")
+    trades = cur.fetchall()
     if trades:
-        cols = [d[0] for d in conn.execute("SELECT * FROM trade_log LIMIT 1").description]
+        cols = [d[0] for d in cur.description]
         fname = f"trades_{timestamp}.csv"
         with open(fname, "w", newline="") as f:
             writer = csv.writer(f)
@@ -570,9 +603,10 @@ def export_csv():
         exports.append(("Trades", fname, len(trades)))
 
     # Positions
-    positions = conn.execute("SELECT * FROM strategy_positions ORDER BY id").fetchall()
+    cur.execute("SELECT * FROM strategy_positions ORDER BY id")
+    positions = cur.fetchall()
     if positions:
-        cols = [d[0] for d in conn.execute("SELECT * FROM strategy_positions LIMIT 1").description]
+        cols = [d[0] for d in cur.description]
         fname = f"positions_{timestamp}.csv"
         with open(fname, "w", newline="") as f:
             writer = csv.writer(f)
@@ -581,9 +615,10 @@ def export_csv():
         exports.append(("Positions", fname, len(positions)))
 
     # Snapshots
-    snapshots = conn.execute("SELECT * FROM daily_snapshots ORDER BY id").fetchall()
+    cur.execute("SELECT * FROM daily_snapshots ORDER BY id")
+    snapshots = cur.fetchall()
     if snapshots:
-        cols = [d[0] for d in conn.execute("SELECT * FROM daily_snapshots LIMIT 1").description]
+        cols = [d[0] for d in cur.description]
         fname = f"snapshots_{timestamp}.csv"
         with open(fname, "w", newline="") as f:
             writer = csv.writer(f)
@@ -606,6 +641,7 @@ def export_csv():
     if exports:
         console.print("\n  [green]Open these in Excel or Google Sheets.[/green]")
 
+    cur.close()
     conn.close()
 
 

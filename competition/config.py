@@ -96,5 +96,16 @@ EXPOSURE_RISK_OFF = _env_float("COMP_EXPOSURE_RISK_OFF", 0.70)
 LIMIT_ORDER_TIMEOUT_SEC = _env_int("COMP_LIMIT_ORDER_TIMEOUT_SEC", 30)
 CYCLE_INTERVAL_SEC = _env_int("COMP_CYCLE_INTERVAL_SEC", 60)  # 1 minute
 
-# --- Database ---
-DB_PATH = os.environ.get("COMP_DB_PATH", "competition_bot.db")
+# --- Database (Railway MySQL) ---
+MYSQL_URL = os.environ.get("MYSQL_URL", "")
+if not MYSQL_URL:
+    print("WARNING: MYSQL_URL not set — DB operations will fail", file=sys.stderr)
+
+# Parse into components for pymysql
+from urllib.parse import urlparse
+_parsed = urlparse(MYSQL_URL) if MYSQL_URL else None
+MYSQL_HOST = _parsed.hostname if _parsed else "localhost"
+MYSQL_PORT = _parsed.port or 3306 if _parsed else 3306
+MYSQL_USER = _parsed.username if _parsed else ""
+MYSQL_PASSWORD = _parsed.password if _parsed else ""
+MYSQL_DATABASE = _parsed.path.lstrip("/") if _parsed else ""
