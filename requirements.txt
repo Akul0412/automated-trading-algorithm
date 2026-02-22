@@ -6,3 +6,4 @@ matplotlib
 python-dotenv
 lxml
 beautifulsoup4
+rich
