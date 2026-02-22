@@ -25,33 +25,51 @@ class Ensemble:
 
     def run_cycle(self):
         """Main orchestration cycle — called every 3 minutes."""
-        logger.info("=" * 50)
-        logger.info("ENSEMBLE CYCLE START")
-        logger.info("=" * 50)
+        logger.info("=" * 60)
+        logger.info("  ENSEMBLE CYCLE START")
+        logger.info("=" * 60)
 
         # 1. Fetch account state
         if self.client and not self.dry_run:
             account = executor.get_account_info(self.client)
             equity = account["equity"]
             cash = account["cash"]
+            logger.info("[ACCOUNT] Equity: $%s | Cash: $%s | Buying Power: $%s",
+                        f"{equity:,.2f}", f"{cash:,.2f}", f"{account['buying_power']:,.2f}")
         else:
             equity = config.TOTAL_CAPITAL
-            cash = equity * 0.1  # Assume 10% cash in dry run
+            cash = equity * 0.1
+            logger.info("[ACCOUNT] DRY RUN — Equity: $%s", f"{equity:,.2f}")
 
         # 2. Check portfolio risk
         risk_status = risk.check_portfolio_risk(equity)
+        logger.info("[RISK] Halt=%s | Reduce=%s | StopNew=%s | Reason: %s",
+                    risk_status["halt"], risk_status.get("reduce", False),
+                    risk_status.get("stop_new", False), risk_status.get("reason", "OK"))
 
         if risk_status["halt"]:
-            logger.critical("RISK HALT — flattening all positions")
+            logger.critical("!!! RISK HALT — FLATTENING ALL POSITIONS !!!")
             self._flatten_all(equity)
             return
 
-        # 3. Take snapshot (first of day if needed)
+        # 3. Take snapshot
         exposure = state.get_total_exposure()
         cap_info = {
             s: state.get_strategy_capital(s)
             for s in ["momentum", "mean_reversion", "sector_rotation"]
         }
+        logger.info("[EXPOSURE] Long: $%s | Short: $%s | Net: $%s | Gross: $%s",
+                    f"{exposure['long']:,.0f}", f"{exposure['short']:,.0f}",
+                    f"{exposure['net']:,.0f}", f"{exposure['gross']:,.0f}")
+        logger.info("[CAPITAL] Momentum: $%s avail | MeanRev: $%s avail | SectorRot: $%s avail",
+                    f"{cap_info['momentum']['available']:,.0f}",
+                    f"{cap_info['mean_reversion']['available']:,.0f}",
+                    f"{cap_info['sector_rotation']['available']:,.0f}")
+        logger.info("[P&L] Momentum: $%s | MeanRev: $%s | SectorRot: $%s",
+                    f"{cap_info['momentum']['realized_pnl']:+,.2f}",
+                    f"{cap_info['mean_reversion']['realized_pnl']:+,.2f}",
+                    f"{cap_info['sector_rotation']['realized_pnl']:+,.2f}")
+
         state.take_snapshot(
             total_equity=equity,
             cash=cash,
@@ -70,53 +88,90 @@ class Ensemble:
 
         # 5. Get open positions
         all_positions = state.get_open_positions()
+        logger.info("[POSITIONS] %d open positions", len(all_positions))
+        for p in all_positions:
+            logger.info("  -> %s %s %s: %d shares @ $%.2f (stop=$%s, target=$%s)",
+                        p["strategy"], p["side"].upper(), p["ticker"],
+                        p["shares"], p["entry_price"],
+                        f"{p['stop_price']:.2f}" if p["stop_price"] else "N/A",
+                        f"{p['target_price']:.2f}" if p["target_price"] else "N/A")
 
         # 6. Check exits across all strategies
         all_exits = []
 
-        if risk.is_momentum_active() or risk.is_momentum_force_close():
-            market_data["force_close_momentum"] = risk.is_momentum_force_close()
+        mom_active = risk.is_momentum_active()
+        mom_force = risk.is_momentum_force_close()
+        mr_active = risk.is_mean_reversion_active()
+        sr_rebalance = risk.is_sector_rebalance_time()
+        logger.info("[WINDOWS] Momentum=%s (force_close=%s) | MeanRev=%s | SectorRebalance=%s",
+                    mom_active, mom_force, mr_active, sr_rebalance)
+
+        if mom_active or mom_force:
+            market_data["force_close_momentum"] = mom_force
             mom_exits = self.momentum.check_exits(all_positions, market_data)
             all_exits.extend(mom_exits)
 
-        if risk.is_mean_reversion_active():
+        if mr_active:
             state.increment_bars_held("mean_reversion")
             mr_exits = self.mean_reversion.check_exits(all_positions, market_data)
             all_exits.extend(mr_exits)
 
-        # Sector rotation checks (rebalance or emergency)
-        market_data["sector_rebalance"] = risk.is_sector_rebalance_time()
+        market_data["sector_rebalance"] = sr_rebalance
         sr_exits = self.sector_rotation.check_exits(all_positions, market_data)
         all_exits.extend(sr_exits)
 
         # 7. Execute exits
+        if all_exits:
+            logger.info("[EXITS] %d exit signals:", len(all_exits))
+            for ex in all_exits:
+                logger.info("  -> EXIT %s @ $%.2f — %s", ex.ticker, ex.current_price, ex.reason)
+        else:
+            logger.info("[EXITS] No exits this cycle")
         self._execute_exits(all_exits, all_positions, market_data)
 
         # 8. Check if we can open new positions
         if risk_status["stop_new"] or risk_status["reduce"]:
-            logger.info("Risk flag active (%s) — skipping new entries", risk_status["reason"])
+            logger.info("[SKIP] Risk flag active (%s) — no new entries this cycle", risk_status["reason"])
             return
 
         # 9. Generate new signals
         all_signals = []
 
-        if risk.is_momentum_active():
+        if mom_active:
             mom_positions = [p for p in state.get_open_positions() if p["strategy"] == "momentum"]
-            if len(mom_positions) < config.MOM_MAX_POSITIONS:
+            slots = config.MOM_MAX_POSITIONS - len(mom_positions)
+            logger.info("[MOMENTUM] %d/%d slots used — scanning for entries...", len(mom_positions), config.MOM_MAX_POSITIONS)
+            if slots > 0:
                 mom_signals = self.momentum.generate_signals(market_data)
                 all_signals.extend(mom_signals)
+        else:
+            logger.info("[MOMENTUM] Outside active window (10:00-15:45 ET)")
 
-        if risk.is_mean_reversion_active():
+        if mr_active:
             mr_positions = [p for p in state.get_open_positions() if p["strategy"] == "mean_reversion"]
-            if len(mr_positions) < config.MR_MAX_POSITIONS:
+            slots = config.MR_MAX_POSITIONS - len(mr_positions)
+            logger.info("[MEAN REV] %d/%d slots used — scanning for entries...", len(mr_positions), config.MR_MAX_POSITIONS)
+            if slots > 0:
                 mr_signals = self.mean_reversion.generate_signals(market_data)
                 all_signals.extend(mr_signals)
+        else:
+            logger.info("[MEAN REV] Outside active window (9:45-15:45 ET)")
 
-        if risk.is_sector_rebalance_time():
+        if sr_rebalance:
+            logger.info("[SECTOR ROT] Rebalance time — generating allocation signals...")
             sr_signals = self.sector_rotation.generate_signals(market_data)
             all_signals.extend(sr_signals)
+        else:
+            logger.info("[SECTOR ROT] Not rebalance time (rebalances at 10:00 ET)")
 
         # 10. Merge and resolve conflicts
+        if all_signals:
+            logger.info("[SIGNALS] %d raw signals:", len(all_signals))
+            for sig in all_signals:
+                logger.info("  -> %s %s %s %s @ $%.2f (strength=%.2f) — %s",
+                            sig.strategy, sig.side.upper(), sig.direction, sig.ticker,
+                            sig.price, sig.strength, sig.reason)
+
         resolved = self._resolve_conflicts(all_signals)
 
         # 11. Apply exposure limits
@@ -124,6 +179,13 @@ class Ensemble:
         regime = market_data.get("regime", "neutral")
         target_exposure = risk.check_exposure_limits(regime)
         filtered = risk.filter_signals_by_exposure(resolved, exposure, equity, target_exposure)
+
+        if filtered:
+            logger.info("[ENTRIES] Executing %d trades:", len(filtered))
+            for sig in filtered:
+                logger.info("  -> %s %s %s %s @ $%.2f", sig.strategy, sig.side.upper(), sig.direction, sig.ticker, sig.price)
+        else:
+            logger.info("[ENTRIES] No new trades this cycle")
 
         # 12. Execute entries
         self._execute_entries(filtered)
@@ -140,8 +202,11 @@ class Ensemble:
                 sector_rotation_pnl=cap_info["sector_rotation"]["realized_pnl"],
                 notes="EOD",
             )
+            logger.info("[EOD] End-of-day snapshot saved")
 
-        logger.info("ENSEMBLE CYCLE COMPLETE")
+        logger.info("=" * 60)
+        logger.info("  ENSEMBLE CYCLE COMPLETE")
+        logger.info("=" * 60)
 
     def _fetch_market_data(self) -> dict:
         """Fetch all required market data for this cycle."""
