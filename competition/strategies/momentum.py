@@ -230,11 +230,10 @@ class MomentumStrategy(BaseStrategy):
                     ))
                     continue
 
-                # Trailing stop: activate at +0.8%, then trail 1.2% below high watermark
+                # Trailing stop: activate at +0.8%, then trail 0.2% behind price
                 if pnl_pct >= config.MOM_TRAILING_ACTIVATE_PCT:
                     if side == "long":
-                        # Trail below the current price by stop_loss_pct
-                        new_stop = current_price * (1 - config.MOM_STOP_LOSS_PCT)
+                        new_stop = current_price * (1 - config.MOM_TRAILING_DISTANCE_PCT)
                         # Only move stop up, never down
                         if pos["stop_price"] is None or new_stop > pos["stop_price"]:
                             exits.append(ExitSignal(
@@ -245,8 +244,7 @@ class MomentumStrategy(BaseStrategy):
                             ))
                             continue
                     if side == "short":
-                        # Trail above the current price by stop_loss_pct
-                        new_stop = current_price * (1 + config.MOM_STOP_LOSS_PCT)
+                        new_stop = current_price * (1 + config.MOM_TRAILING_DISTANCE_PCT)
                         # Only move stop down, never up
                         if pos["stop_price"] is None or new_stop < pos["stop_price"]:
                             exits.append(ExitSignal(
