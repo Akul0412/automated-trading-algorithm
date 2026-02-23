@@ -236,6 +236,7 @@ def get_duplicate_open_positions() -> list[dict]:
     """
     Find open positions for tickers that were already closed today in the same strategy.
     These are re-entries that should not have happened.
+    Excludes sector_rotation (rebalancing is expected behavior).
     Returns the open re-entry positions (the ones to close).
     """
     conn = _get_conn()
@@ -247,8 +248,9 @@ def get_duplicate_open_positions() -> list[dict]:
            INNER JOIN (
                SELECT DISTINCT strategy, ticker FROM strategy_positions
                WHERE status='closed' AND DATE(exit_time) = CURDATE()
+               AND strategy != 'sector_rotation'
            ) closed ON p.strategy = closed.strategy AND p.ticker = closed.ticker
-           WHERE p.status='open'"""
+           WHERE p.status='open' AND p.strategy != 'sector_rotation'"""
     )
     cols = [d[0] for d in cur.description]
     rows = cur.fetchall()
