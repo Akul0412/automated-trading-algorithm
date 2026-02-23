@@ -216,6 +216,22 @@ def update_position_stops(pos_id: int, stop_price: float | None = None, target_p
     conn.close()
 
 
+def get_closed_tickers_today(strategy: str) -> set[str]:
+    """Get tickers that were closed today for a given strategy. Prevents re-entry same day."""
+    conn = _get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """SELECT DISTINCT ticker FROM strategy_positions
+           WHERE strategy=%s AND status='closed'
+           AND DATE(exit_time) = CURDATE()""",
+        (strategy,),
+    )
+    tickers = {row[0] for row in cur.fetchall()}
+    cur.close()
+    conn.close()
+    return tickers
+
+
 def increment_bars_held(strategy: str):
     """Increment bars_held counter for all open positions in a strategy."""
     conn = _get_conn()

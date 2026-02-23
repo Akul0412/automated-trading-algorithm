@@ -286,6 +286,12 @@ class Ensemble:
         for p in open_positions:
             held_by_ticker.setdefault(p["ticker"], []).append(p)
 
+        # Get tickers already closed today per strategy (no re-entry same day)
+        closed_today = {
+            "momentum": state.get_closed_tickers_today("momentum"),
+            "mean_reversion": state.get_closed_tickers_today("mean_reversion"),
+        }
+
         for ticker, sigs in by_ticker.items():
             # Check for opposite directions
             directions = {s.direction for s in sigs}
@@ -294,6 +300,11 @@ class Ensemble:
                 continue
 
             for sig in sigs:
+                # Skip if already closed this ticker today in this strategy
+                if sig.ticker in closed_today.get(sig.strategy, set()):
+                    logger.info("Skipping %s %s — already closed today in %s",
+                                sig.direction.upper(), ticker, sig.strategy)
+                    continue
                 # Skip if already holding this ticker in this strategy
                 if (sig.strategy, sig.ticker) in held_tickers:
                     logger.debug("Skipping %s — already held in %s", ticker, sig.strategy)
