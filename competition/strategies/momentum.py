@@ -40,6 +40,7 @@ class MomentumStrategy(BaseStrategy):
         if bars_1m is None or bars_1m.empty:
             return []
 
+        latest_prices = market_data.get("latest_prices", {})
         signals = []
 
         for symbol in MOMENTUM_UNIVERSE:
@@ -67,10 +68,13 @@ class MomentumStrategy(BaseStrategy):
                 range_high = float(opening_bars["high"].max())
                 range_low = float(opening_bars["low"].min())
 
-                # Current bar (most recent)
+                # Current bar close (for indicator checks)
                 current = today_data.iloc[-1]
                 current_close = float(current["close"])
                 current_volume = float(current["volume"])
+
+                # Real-time price for order placement
+                live_price = latest_prices.get(symbol, current_close)
 
                 # Confirmation: check last N bars all closed beyond range level
                 confirm_n = config.MOM_CONFIRM_BARS
@@ -104,8 +108,8 @@ class MomentumStrategy(BaseStrategy):
                         and current_ema_fast > current_ema_slow
                         and volume_ratio >= config.MOM_VOLUME_MULTIPLIER):
 
-                    stop = current_close * (1 - config.MOM_STOP_LOSS_PCT)
-                    target = current_close * (1 + config.MOM_PROFIT_TARGET_PCT)
+                    stop = live_price * (1 - config.MOM_STOP_LOSS_PCT)
+                    target = live_price * (1 + config.MOM_PROFIT_TARGET_PCT)
                     strength = min(volume_ratio / 3.0, 1.0)
 
                     signals.append(TradeSignal(
@@ -113,11 +117,11 @@ class MomentumStrategy(BaseStrategy):
                         ticker=symbol,
                         side="buy",
                         direction="long",
-                        price=current_close,
+                        price=live_price,
                         stop_price=stop,
                         target_price=target,
                         strength=strength,
-                        reason=f"ORB long: close={current_close:.2f} > range_high={range_high:.2f}, vol={volume_ratio:.1f}x, confirmed={confirm_n}bars",
+                        reason=f"ORB long: close={live_price:.2f} > range_high={range_high:.2f}, vol={volume_ratio:.1f}x, confirmed={confirm_n}bars",
                         details={
                             "range_high": range_high, "range_low": range_low,
                             "vwap": current_vwap, "ema_fast": current_ema_fast,
@@ -132,8 +136,8 @@ class MomentumStrategy(BaseStrategy):
                       and current_ema_fast < current_ema_slow
                       and volume_ratio >= config.MOM_VOLUME_MULTIPLIER):
 
-                    stop = current_close * (1 + config.MOM_STOP_LOSS_PCT)
-                    target = current_close * (1 - config.MOM_PROFIT_TARGET_PCT)
+                    stop = live_price * (1 + config.MOM_STOP_LOSS_PCT)
+                    target = live_price * (1 - config.MOM_PROFIT_TARGET_PCT)
                     strength = min(volume_ratio / 3.0, 1.0)
 
                     signals.append(TradeSignal(
@@ -141,11 +145,11 @@ class MomentumStrategy(BaseStrategy):
                         ticker=symbol,
                         side="sell",
                         direction="short",
-                        price=current_close,
+                        price=live_price,
                         stop_price=stop,
                         target_price=target,
                         strength=strength,
-                        reason=f"ORB short: close={current_close:.2f} < range_low={range_low:.2f}, vol={volume_ratio:.1f}x, confirmed={confirm_n}bars",
+                        reason=f"ORB short: close={live_price:.2f} < range_low={range_low:.2f}, vol={volume_ratio:.1f}x, confirmed={confirm_n}bars",
                         details={
                             "range_high": range_high, "range_low": range_low,
                             "vwap": current_vwap, "ema_fast": current_ema_fast,
@@ -174,6 +178,7 @@ class MomentumStrategy(BaseStrategy):
         if bars_1m is None or bars_1m.empty:
             return []
 
+        latest_prices = market_data.get("latest_prices", {})
         exits = []
         force_close = market_data.get("force_close_momentum", False)
 
@@ -187,7 +192,8 @@ class MomentumStrategy(BaseStrategy):
                 if ohlcv is None or ohlcv.empty:
                     continue
 
-                current_price = float(ohlcv["close"].iloc[-1])
+                # Use real-time price if available, fall back to bar close
+                current_price = latest_prices.get(ticker, float(ohlcv["close"].iloc[-1]))
                 entry_price = pos["entry_price"]
                 side = pos["side"]
 

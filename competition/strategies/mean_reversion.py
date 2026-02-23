@@ -34,6 +34,7 @@ class MeanReversionStrategy(BaseStrategy):
         else:
             return []
 
+        latest_prices = market_data.get("latest_prices", {})
         signals = []
 
         for symbol in symbols:
@@ -46,6 +47,7 @@ class MeanReversionStrategy(BaseStrategy):
                 volume = ohlcv["volume"]
                 current_close = float(close.iloc[-1])
                 current_volume = float(volume.iloc[-1])
+                live_price = latest_prices.get(symbol, current_close)
 
                 # Bollinger Bands on 15-min close
                 bb_upper, bb_mid, bb_lower = indicators.bollinger_bands(
@@ -81,7 +83,7 @@ class MeanReversionStrategy(BaseStrategy):
                         and volume_ratio < config.MR_VOLUME_SPIKE
                         and daily_sma_ok):
 
-                    stop = current_close * (1 - config.MR_STOP_LOSS_PCT)
+                    stop = live_price * (1 - config.MR_STOP_LOSS_PCT)
                     target = current_bb_mid
                     strength = (config.MR_RSI_OVERSOLD - current_rsi) / config.MR_RSI_OVERSOLD
 
@@ -90,7 +92,7 @@ class MeanReversionStrategy(BaseStrategy):
                         ticker=symbol,
                         side="buy",
                         direction="long",
-                        price=current_close,
+                        price=live_price,
                         stop_price=stop,
                         target_price=target,
                         strength=strength,
@@ -108,7 +110,7 @@ class MeanReversionStrategy(BaseStrategy):
                       and volume_ratio < config.MR_VOLUME_SPIKE
                       and daily_sma_ok):
 
-                    stop = current_close * (1 + config.MR_STOP_LOSS_PCT)
+                    stop = live_price * (1 + config.MR_STOP_LOSS_PCT)
                     target = current_bb_mid
                     strength = (current_rsi - config.MR_RSI_OVERBOUGHT) / (100 - config.MR_RSI_OVERBOUGHT)
 
@@ -117,7 +119,7 @@ class MeanReversionStrategy(BaseStrategy):
                         ticker=symbol,
                         side="sell",
                         direction="short",
-                        price=current_close,
+                        price=live_price,
                         stop_price=stop,
                         target_price=target,
                         strength=strength,
@@ -148,6 +150,7 @@ class MeanReversionStrategy(BaseStrategy):
         if bars_15m is None or bars_15m.empty:
             return []
 
+        latest_prices = market_data.get("latest_prices", {})
         exits = []
 
         for pos in positions:
@@ -161,7 +164,8 @@ class MeanReversionStrategy(BaseStrategy):
                     continue
 
                 close = ohlcv["close"]
-                current_price = float(close.iloc[-1])
+                # Use real-time price if available, fall back to bar close
+                current_price = latest_prices.get(ticker, float(close.iloc[-1]))
                 entry_price = pos["entry_price"]
                 side = pos["side"]
 

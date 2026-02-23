@@ -238,8 +238,13 @@ class Ensemble:
             daily_bars = data.get_daily_bars(daily_symbols, lookback_days=60)
             market_data["daily_bars"] = daily_bars
 
+            # Real-time prices for all symbols (used for exits and entries)
+            all_symbols = list(set(MOMENTUM_UNIVERSE + SECTOR_UNIVERSE))
+            latest_prices = data.get_latest_prices(all_symbols)
+            market_data["latest_prices"] = latest_prices
+
             # SPY emergency check
-            spy_prices = data.get_latest_prices(["SPY"])
+            spy_prices = latest_prices
             if spy_prices and daily_bars is not None and not daily_bars.empty:
                 spy_current = spy_prices.get("SPY", 0)
                 try:
