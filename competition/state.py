@@ -6,6 +6,7 @@ Tables: strategy_positions, strategy_capital, daily_snapshots, trade_log.
 import datetime
 import json
 import logging
+import time
 
 import pymysql
 
@@ -13,18 +14,42 @@ from competition import config
 
 logger = logging.getLogger(__name__)
 
+# Reusable connection (avoids opening a new one for every DB call)
+_conn: pymysql.Connection | None = None
+
 
 def _get_conn() -> pymysql.Connection:
-    conn = pymysql.connect(
-        host=config.MYSQL_HOST,
-        port=config.MYSQL_PORT,
-        user=config.MYSQL_USER,
-        password=config.MYSQL_PASSWORD,
-        database=config.MYSQL_DATABASE,
-        autocommit=False,
-        cursorclass=pymysql.cursors.Cursor,
-    )
-    return conn
+    global _conn
+    # Reuse existing connection if still alive
+    if _conn is not None:
+        try:
+            _conn.ping(reconnect=True)
+            return _conn
+        except Exception:
+            _conn = None
+
+    # Connect with retry (Railway internal network can be flaky)
+    for attempt in range(3):
+        try:
+            _conn = pymysql.connect(
+                host=config.MYSQL_HOST,
+                port=config.MYSQL_PORT,
+                user=config.MYSQL_USER,
+                password=config.MYSQL_PASSWORD,
+                database=config.MYSQL_DATABASE,
+                autocommit=False,
+                connect_timeout=10,
+                read_timeout=10,
+                write_timeout=10,
+                cursorclass=pymysql.cursors.Cursor,
+            )
+            return _conn
+        except pymysql.err.OperationalError as e:
+            logger.warning("MySQL connect attempt %d/3 failed: %s", attempt + 1, e)
+            if attempt < 2:
+                time.sleep(2)
+            else:
+                raise
 
 
 def init_db():
@@ -101,7 +126,6 @@ def init_db():
 
     conn.commit()
     cur.close()
-    conn.close()
     logger.info("Competition DB initialized (MySQL: %s)", config.MYSQL_HOST)
 
 
@@ -130,7 +154,6 @@ def init_capital_pools():
         )
     conn.commit()
     cur.close()
-    conn.close()
     logger.info("Capital pools initialized")
 
 
@@ -162,7 +185,6 @@ def open_position(
     )
     conn.commit()
     cur.close()
-    conn.close()
     return pos_id
 
 
@@ -199,7 +221,6 @@ def close_position(pos_id: int, exit_price: float, reason: str = ""):
     )
     conn.commit()
     cur.close()
-    conn.close()
     logger.info("Closed position #%d %s %s: PnL=$%.2f (%s)", pos_id, side, ticker, pnl, reason)
 
 
@@ -213,7 +234,6 @@ def update_position_stops(pos_id: int, stop_price: float | None = None, target_p
         cur.execute("UPDATE strategy_positions SET target_price=%s WHERE id=%s", (target_price, pos_id))
     conn.commit()
     cur.close()
-    conn.close()
 
 
 def get_closed_tickers_today(strategy: str) -> set[str]:
@@ -228,7 +248,6 @@ def get_closed_tickers_today(strategy: str) -> set[str]:
     )
     tickers = {row[0] for row in cur.fetchall()}
     cur.close()
-    conn.close()
     return tickers
 
 
@@ -255,7 +274,6 @@ def get_duplicate_open_positions() -> list[dict]:
     cols = [d[0] for d in cur.description]
     rows = cur.fetchall()
     cur.close()
-    conn.close()
     return [dict(zip(cols, row)) for row in rows]
 
 
@@ -269,7 +287,6 @@ def increment_bars_held(strategy: str):
     )
     conn.commit()
     cur.close()
-    conn.close()
 
 
 def get_open_positions(strategy: str | None = None) -> list[dict]:
@@ -291,7 +308,6 @@ def get_open_positions(strategy: str | None = None) -> list[dict]:
         )
     rows = cur.fetchall()
     cur.close()
-    conn.close()
 
     positions = []
     for row in rows:
@@ -321,7 +337,6 @@ def get_strategy_capital(strategy: str) -> dict:
     )
     row = cur.fetchone()
     cur.close()
-    conn.close()
     if not row:
         return {"allocated": 0, "used": 0, "realized_pnl": 0, "available": 0}
     allocated, used, realized_pnl = row
@@ -342,7 +357,6 @@ def get_total_exposure() -> dict:
     )
     rows = cur.fetchall()
     cur.close()
-    conn.close()
 
     long_exp = 0.0
     short_exp = 0.0
@@ -386,7 +400,6 @@ def log_trade(
     )
     conn.commit()
     cur.close()
-    conn.close()
 
 
 # --- Snapshots ---
@@ -411,7 +424,6 @@ def take_snapshot(
     )
     conn.commit()
     cur.close()
-    conn.close()
 
 
 def get_daily_start_equity() -> float | None:
@@ -425,7 +437,6 @@ def get_daily_start_equity() -> float | None:
     )
     row = cur.fetchone()
     cur.close()
-    conn.close()
     return row[0] if row else None
 
 
@@ -438,5 +449,4 @@ def get_peak_equity() -> float | None:
     )
     row = cur.fetchone()
     cur.close()
-    conn.close()
     return row[0] if row and row[0] else None
