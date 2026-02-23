@@ -17,11 +17,24 @@ logger = logging.getLogger(__name__)
 class MomentumStrategy(BaseStrategy):
     name = "momentum"
 
+    def __init__(self):
+        # Track entries per ticker per day to limit re-entries
+        self._daily_entries: dict[str, int] = {}  # ticker -> count
+        self._last_date: str = ""
+
+    def _reset_daily_counters(self, today: str):
+        """Reset per-ticker entry counts at start of each new day."""
+        if today != self._last_date:
+            self._daily_entries.clear()
+            self._last_date = today
+
     def generate_signals(self, market_data: dict) -> list[TradeSignal]:
         """
         Entry: Price breaks above/below 30-min opening range, confirmed by
-        VWAP direction and 9-EMA > 21-EMA (long) or 9-EMA < 21-EMA (short).
-        Volume on breakout bar >= 1.5x average.
+        VWAP direction, 9-EMA > 21-EMA (long) or 9-EMA < 21-EMA (short),
+        volume on breakout bar >= 1.5x average, and N consecutive closes
+        beyond the range level (confirmation).
+        Max entries per ticker per day is capped.
         """
         bars_1m = market_data.get("bars_1m")
         if bars_1m is None or bars_1m.empty:
@@ -41,6 +54,14 @@ class MomentumStrategy(BaseStrategy):
                     # Need at least 30 min of data (30 bars of 1-min) + current
                     continue
 
+                # Reset daily counters if new day
+                today_str = str(today_data.index[-1].date()) if hasattr(today_data.index[-1], 'date') else ""
+                self._reset_daily_counters(today_str)
+
+                # Check per-ticker entry limit
+                if self._daily_entries.get(symbol, 0) >= config.MOM_MAX_ENTRIES_PER_TICKER:
+                    continue
+
                 # Calculate opening range from first 30 bars (30 min)
                 opening_bars = today_data.iloc[:30]
                 range_high = float(opening_bars["high"].max())
@@ -50,6 +71,12 @@ class MomentumStrategy(BaseStrategy):
                 current = today_data.iloc[-1]
                 current_close = float(current["close"])
                 current_volume = float(current["volume"])
+
+                # Confirmation: check last N bars all closed beyond range level
+                confirm_n = config.MOM_CONFIRM_BARS
+                if len(today_data) < 30 + confirm_n:
+                    continue
+                recent_closes = today_data["close"].iloc[-confirm_n:].astype(float)
 
                 # VWAP
                 vwap_val = indicators.vwap_intraday(
@@ -68,8 +95,11 @@ class MomentumStrategy(BaseStrategy):
                 avg_volume = float(ohlcv["volume"].tail(20).mean())
                 volume_ratio = current_volume / avg_volume if avg_volume > 0 else 0
 
-                # --- Long breakout ---
-                if (current_close > range_high
+                # --- Long breakout (N consecutive closes above range high) ---
+                long_confirmed = all(c > range_high for c in recent_closes)
+                short_confirmed = all(c < range_low for c in recent_closes)
+
+                if (long_confirmed
                         and current_close > current_vwap
                         and current_ema_fast > current_ema_slow
                         and volume_ratio >= config.MOM_VOLUME_MULTIPLIER):
@@ -87,16 +117,17 @@ class MomentumStrategy(BaseStrategy):
                         stop_price=stop,
                         target_price=target,
                         strength=strength,
-                        reason=f"ORB long: close={current_close:.2f} > range_high={range_high:.2f}, vol={volume_ratio:.1f}x",
+                        reason=f"ORB long: close={current_close:.2f} > range_high={range_high:.2f}, vol={volume_ratio:.1f}x, confirmed={confirm_n}bars",
                         details={
                             "range_high": range_high, "range_low": range_low,
                             "vwap": current_vwap, "ema_fast": current_ema_fast,
                             "ema_slow": current_ema_slow, "volume_ratio": volume_ratio,
                         },
                     ))
+                    self._daily_entries[symbol] = self._daily_entries.get(symbol, 0) + 1
 
-                # --- Short breakout ---
-                elif (current_close < range_low
+                # --- Short breakout (N consecutive closes below range low) ---
+                elif (short_confirmed
                       and current_close < current_vwap
                       and current_ema_fast < current_ema_slow
                       and volume_ratio >= config.MOM_VOLUME_MULTIPLIER):
@@ -114,13 +145,14 @@ class MomentumStrategy(BaseStrategy):
                         stop_price=stop,
                         target_price=target,
                         strength=strength,
-                        reason=f"ORB short: close={current_close:.2f} < range_low={range_low:.2f}, vol={volume_ratio:.1f}x",
+                        reason=f"ORB short: close={current_close:.2f} < range_low={range_low:.2f}, vol={volume_ratio:.1f}x, confirmed={confirm_n}bars",
                         details={
                             "range_high": range_high, "range_low": range_low,
                             "vwap": current_vwap, "ema_fast": current_ema_fast,
                             "ema_slow": current_ema_slow, "volume_ratio": volume_ratio,
                         },
                     ))
+                    self._daily_entries[symbol] = self._daily_entries.get(symbol, 0) + 1
 
             except Exception as e:
                 logger.error("Momentum signal error for %s: %s", symbol, e)

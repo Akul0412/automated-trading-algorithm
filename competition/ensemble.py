@@ -267,6 +267,10 @@ class Ensemble:
         resolved = []
         open_positions = state.get_open_positions()
         held_tickers = {(p["strategy"], p["ticker"]) for p in open_positions}
+        # Cross-strategy: map ticker -> set of directions held by ANY strategy
+        held_directions: dict[str, set[str]] = {}
+        for p in open_positions:
+            held_directions.setdefault(p["ticker"], set()).add(p["side"])
 
         for ticker, sigs in by_ticker.items():
             # Check for opposite directions
@@ -279,6 +283,14 @@ class Ensemble:
                 # Skip if already holding this ticker in this strategy
                 if (sig.strategy, sig.ticker) in held_tickers:
                     logger.debug("Skipping %s — already held in %s", ticker, sig.strategy)
+                    continue
+                # Skip if another strategy holds opposite direction on same ticker
+                existing_sides = held_directions.get(sig.ticker, set())
+                if sig.direction == "long" and "short" in existing_sides:
+                    logger.info("Cross-strategy conflict: %s wants LONG %s but another strategy is SHORT", sig.strategy, ticker)
+                    continue
+                if sig.direction == "short" and "long" in existing_sides:
+                    logger.info("Cross-strategy conflict: %s wants SHORT %s but another strategy is LONG", sig.strategy, ticker)
                     continue
                 resolved.append(sig)
 
