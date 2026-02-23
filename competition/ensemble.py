@@ -86,6 +86,9 @@ class Ensemble:
             logger.warning("Failed to fetch market data, skipping cycle")
             return
 
+        # 4b. Close any duplicate re-entry positions (opened after already closing same ticker today)
+        self._close_duplicate_positions(market_data)
+
         # 5. Get open positions
         all_positions = state.get_open_positions()
         logger.info("[POSITIONS] %d open positions", len(all_positions))
@@ -394,6 +397,29 @@ class Ensemble:
             )
             logger.info("Exit %s %s: %s (%s)",
                         pos["strategy"], pos["ticker"], result["status"], exit_sig.reason)
+
+    def _close_duplicate_positions(self, market_data: dict):
+        """Close positions that are re-entries (ticker already closed today in same strategy)."""
+        duplicates = state.get_duplicate_open_positions()
+        if not duplicates:
+            return
+
+        latest_prices = market_data.get("latest_prices", {})
+        logger.warning("[CLEANUP] Found %d duplicate re-entry positions to close:", len(duplicates))
+
+        for pos in duplicates:
+            current_price = latest_prices.get(pos["ticker"], pos["entry_price"])
+            logger.warning("  -> Closing re-entry: %s %s %s #%d (%d shares @ $%.2f)",
+                           pos["strategy"], pos["side"].upper(), pos["ticker"],
+                           pos["id"], pos["shares"], pos["entry_price"])
+            result = executor.execute_exit(
+                client=self.client,
+                position=pos,
+                current_price=current_price,
+                reason="DUPLICATE_REENTRY_CLEANUP",
+                dry_run=self.dry_run,
+            )
+            logger.warning("  -> %s %s cleanup: %s", pos["strategy"], pos["ticker"], result["status"])
 
     def _flatten_all(self, equity: float):
         """Emergency: close all positions."""

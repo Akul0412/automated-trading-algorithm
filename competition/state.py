@@ -232,6 +232,31 @@ def get_closed_tickers_today(strategy: str) -> set[str]:
     return tickers
 
 
+def get_duplicate_open_positions() -> list[dict]:
+    """
+    Find open positions for tickers that were already closed today in the same strategy.
+    These are re-entries that should not have happened.
+    Returns the open re-entry positions (the ones to close).
+    """
+    conn = _get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """SELECT p.id, p.strategy, p.ticker, p.side, p.shares, p.entry_price,
+                  p.stop_price, p.target_price, p.entry_time, p.bars_held, p.notes
+           FROM strategy_positions p
+           INNER JOIN (
+               SELECT DISTINCT strategy, ticker FROM strategy_positions
+               WHERE status='closed' AND DATE(exit_time) = CURDATE()
+           ) closed ON p.strategy = closed.strategy AND p.ticker = closed.ticker
+           WHERE p.status='open'"""
+    )
+    cols = [d[0] for d in cur.description]
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return [dict(zip(cols, row)) for row in rows]
+
+
 def increment_bars_held(strategy: str):
     """Increment bars_held counter for all open positions in a strategy."""
     conn = _get_conn()
