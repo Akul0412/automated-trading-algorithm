@@ -333,7 +333,7 @@ class Ensemble:
                 continue
 
             # If it's just a stop update, don't exit
-            if exit_sig.new_stop is not None and exit_sig.reason == "TRAILING_ACTIVATED":
+            if exit_sig.new_stop is not None:
                 state.update_position_stops(exit_sig.position_id, stop_price=exit_sig.new_stop)
                 logger.info("Updated stop for %s #%d to $%.2f",
                             pos["ticker"], exit_sig.position_id, exit_sig.new_stop)
