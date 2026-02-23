@@ -172,7 +172,14 @@ class Ensemble:
                             sig.strategy, sig.side.upper(), sig.direction, sig.ticker,
                             sig.price, sig.strength, sig.reason)
 
-        resolved = self._resolve_conflicts(all_signals)
+        resolved, conflict_exits = self._resolve_conflicts(all_signals)
+
+        # 10b. Execute conflict-triggered exits (close opposite positions)
+        if conflict_exits:
+            logger.info("[CONFLICT EXITS] %d positions to close:", len(conflict_exits))
+            for ex in conflict_exits:
+                logger.info("  -> EXIT %s @ $%.2f — %s", ex.ticker, ex.current_price, ex.reason)
+            self._execute_exits(conflict_exits, all_positions, market_data)
 
         # 11. Apply exposure limits
         exposure = state.get_total_exposure()
@@ -253,11 +260,12 @@ class Ensemble:
 
         return market_data
 
-    def _resolve_conflicts(self, signals: list[TradeSignal]) -> list[TradeSignal]:
+    def _resolve_conflicts(self, signals: list[TradeSignal]) -> tuple[list[TradeSignal], list[ExitSignal]]:
         """
         Resolve conflicting signals:
         - Opposite signals on same ticker cancel out
         - Check we don't already have a position in the ticker for that strategy
+        - Cross-strategy conflict: close the existing opposite position, skip the new signal
         """
         # Group by ticker
         by_ticker: dict[str, list[TradeSignal]] = {}
@@ -265,12 +273,13 @@ class Ensemble:
             by_ticker.setdefault(sig.ticker, []).append(sig)
 
         resolved = []
+        conflict_exits = []
         open_positions = state.get_open_positions()
         held_tickers = {(p["strategy"], p["ticker"]) for p in open_positions}
-        # Cross-strategy: map ticker -> set of directions held by ANY strategy
-        held_directions: dict[str, set[str]] = {}
+        # Cross-strategy: map ticker -> list of positions held by ANY strategy
+        held_by_ticker: dict[str, list[dict]] = {}
         for p in open_positions:
-            held_directions.setdefault(p["ticker"], set()).add(p["side"])
+            held_by_ticker.setdefault(p["ticker"], []).append(p)
 
         for ticker, sigs in by_ticker.items():
             # Check for opposite directions
@@ -284,20 +293,35 @@ class Ensemble:
                 if (sig.strategy, sig.ticker) in held_tickers:
                     logger.debug("Skipping %s — already held in %s", ticker, sig.strategy)
                     continue
-                # Skip if another strategy holds opposite direction on same ticker
-                existing_sides = held_directions.get(sig.ticker, set())
-                if sig.direction == "long" and "short" in existing_sides:
-                    logger.info("Cross-strategy conflict: %s wants LONG %s but another strategy is SHORT", sig.strategy, ticker)
-                    continue
-                if sig.direction == "short" and "long" in existing_sides:
-                    logger.info("Cross-strategy conflict: %s wants SHORT %s but another strategy is LONG", sig.strategy, ticker)
-                    continue
+                # Cross-strategy conflict: close the existing opposite position, skip the new signal
+                existing_positions = held_by_ticker.get(sig.ticker, [])
+                conflict_found = False
+                for pos in existing_positions:
+                    if pos["strategy"] != sig.strategy:
+                        opposite = (sig.direction == "long" and pos["side"] == "short") or \
+                                   (sig.direction == "short" and pos["side"] == "long")
+                        if opposite:
+                            logger.info("Cross-strategy conflict: %s wants %s %s but %s is %s — closing existing position",
+                                        sig.strategy, sig.direction.upper(), ticker,
+                                        pos["strategy"], pos["side"].upper())
+                            prices = data.get_latest_prices([ticker])
+                            current_price = prices.get(ticker, pos["entry_price"])
+                            conflict_exits.append(ExitSignal(
+                                position_id=pos["id"],
+                                ticker=ticker,
+                                reason=f"CROSS_STRATEGY_CONFLICT ({sig.strategy} wants {sig.direction})",
+                                current_price=current_price,
+                            ))
+                            conflict_found = True
+                if conflict_found:
+                    continue  # Don't open the new signal
                 resolved.append(sig)
 
         if len(resolved) < len(signals):
-            logger.info("Conflict resolution: %d → %d signals", len(signals), len(resolved))
+            logger.info("Conflict resolution: %d → %d signals, %d conflict exits",
+                        len(signals), len(resolved), len(conflict_exits))
 
-        return resolved
+        return resolved, conflict_exits
 
     def _execute_entries(self, signals: list[TradeSignal]):
         """Execute entry orders for approved signals."""
