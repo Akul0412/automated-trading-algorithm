@@ -230,24 +230,32 @@ class MomentumStrategy(BaseStrategy):
                     ))
                     continue
 
-                # Trailing stop: move stop to breakeven after +0.8%
+                # Trailing stop: activate at +0.8%, then trail 1.2% below high watermark
                 if pnl_pct >= config.MOM_TRAILING_ACTIVATE_PCT:
-                    if side == "long" and (pos["stop_price"] is None or pos["stop_price"] < entry_price):
-                        exits.append(ExitSignal(
-                            position_id=pos["id"], ticker=ticker,
-                            reason="TRAILING_ACTIVATED",
-                            current_price=current_price,
-                            new_stop=entry_price,
-                        ))
-                        continue
-                    if side == "short" and (pos["stop_price"] is None or pos["stop_price"] > entry_price):
-                        exits.append(ExitSignal(
-                            position_id=pos["id"], ticker=ticker,
-                            reason="TRAILING_ACTIVATED",
-                            current_price=current_price,
-                            new_stop=entry_price,
-                        ))
-                        continue
+                    if side == "long":
+                        # Trail below the current price by stop_loss_pct
+                        new_stop = current_price * (1 - config.MOM_STOP_LOSS_PCT)
+                        # Only move stop up, never down
+                        if pos["stop_price"] is None or new_stop > pos["stop_price"]:
+                            exits.append(ExitSignal(
+                                position_id=pos["id"], ticker=ticker,
+                                reason=f"TRAILING_UPDATE (stop→${new_stop:.2f})",
+                                current_price=current_price,
+                                new_stop=new_stop,
+                            ))
+                            continue
+                    if side == "short":
+                        # Trail above the current price by stop_loss_pct
+                        new_stop = current_price * (1 + config.MOM_STOP_LOSS_PCT)
+                        # Only move stop down, never up
+                        if pos["stop_price"] is None or new_stop < pos["stop_price"]:
+                            exits.append(ExitSignal(
+                                position_id=pos["id"], ticker=ticker,
+                                reason=f"TRAILING_UPDATE (stop→${new_stop:.2f})",
+                                current_price=current_price,
+                                new_stop=new_stop,
+                            ))
+                            continue
 
                 # VWAP cross exit
                 today_data = self._get_today_data(ohlcv)
